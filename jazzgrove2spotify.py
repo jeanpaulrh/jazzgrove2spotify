@@ -155,6 +155,18 @@ def fetch_icy_metadata(stream_url, timeout=10):
             if meta_length == 0:
                 return None, None
             meta_data = r.raw.read(meta_length).decode("utf-8", errors="replace").strip("\x00")
+            # Prefer JSON metadata (avoids apostrophe issues in StreamTitle)
+            json_match = re.search(r"json='({.*?})'", meta_data)
+            if json_match:
+                try:
+                    data = json.loads(json_match.group(1))
+                    artist = data.get("artist", "").strip()
+                    title = data.get("title", "").strip()
+                    if artist and title:
+                        return artist, title
+                except json.JSONDecodeError:
+                    pass
+            # Fallback to StreamTitle
             match = re.search(r"StreamTitle='([^']*)'", meta_data)
             if match:
                 raw = match.group(1).strip()
@@ -258,32 +270,50 @@ def clean_artist(text):
     return text.strip()
 
 
+def first_artist(text):
+    """Extract the first artist from multi-artist strings."""
+    for sep in [" and ", " & ", ", ", " with ", " feat. ", " feat "]:
+        if sep.lower() in text.lower():
+            idx = text.lower().index(sep.lower())
+            return text[:idx].strip()
+    return text
+
+
 def similarity(a, b):
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 
 def search_spotify(sp, artist, title):
     """Multi-level search: structured -> free text -> cleaned title -> cleaned artist."""
+    first = first_artist(artist)
     queries = [
         f'artist:"{artist}" track:"{title}"',
         f"{artist} {title}",
         f"{clean_artist(artist)} {clean_title(title)}",
         f'artist:"{clean_artist(artist)}" track:"{clean_title(title)}"',
+        f'artist:"{first}" track:"{clean_title(title)}"',
     ]
-    seen = set()
+    seen_queries = set()
+    seen_uris = set()
+    candidates = []
     for q in queries:
-        if q in seen:
+        if q in seen_queries:
             continue
-        seen.add(q)
+        seen_queries.add(q)
         results = sp.search(q=q, type="track", limit=5)
         tracks = results.get("tracks", {}).get("items", [])
         for t in tracks:
-            t_artist = t["artists"][0]["name"] if t["artists"] else ""
+            if t["uri"] in seen_uris:
+                continue
+            seen_uris.add(t["uri"])
+            # Compare against all Spotify artists combined
+            t_artists = ", ".join(a["name"] for a in t["artists"])
             t_title = t["name"]
             # Compare using cleaned versions for scoring
             artist_score = max(
-                similarity(artist, t_artist),
-                similarity(clean_artist(artist), t_artist),
+                similarity(artist, t_artists),
+                similarity(clean_artist(artist), t_artists),
+                similarity(first, t["artists"][0]["name"]) if t["artists"] else 0,
             )
             title_score = max(
                 similarity(title, t_title),
@@ -292,11 +322,15 @@ def search_spotify(sp, artist, title):
             )
             combined = (artist_score + title_score) / 2
             if combined >= 0.55 and title_score >= 0.4:
-                logging.info(
-                    "Match (%.0f%%): %s - %s -> %s - %s [%s]",
-                    combined * 100, artist, title, t_artist, t_title, t["uri"],
-                )
-                return t["uri"]
+                candidates.append((combined, t_artists, t_title, t["uri"]))
+    if candidates:
+        candidates.sort(key=lambda c: c[0], reverse=True)
+        combined, t_artists, t_title, uri = candidates[0]
+        logging.info(
+            "Match (%.0f%%): %s - %s -> %s - %s [%s]",
+            combined * 100, artist, title, t_artists, t_title, uri,
+        )
+        return uri
     logging.warning("No Spotify match for: %s - %s", artist, title)
     return None
 
