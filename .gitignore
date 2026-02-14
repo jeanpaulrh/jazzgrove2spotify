@@ -1,0 +1,8 @@
+config.ini
+.cache-spotipy
+*.db
+*.log
+.lock
+venv/
+__pycache__/
+*.pyc

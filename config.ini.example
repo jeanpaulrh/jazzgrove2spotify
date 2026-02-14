@@ -1,0 +1,16 @@
+[spotify]
+client_id = YOUR_CLIENT_ID
+client_secret = YOUR_CLIENT_SECRET
+redirect_uri = http://localhost:8888/callback
+playlist_id = YOUR_PLAYLIST_ID
+
+[stream]
+# Find this URL in your browser DevTools (Network tab, filter "radiomast")
+# Example: https://stream.radiomast.io/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+stream_url = YOUR_STREAM_URL
+
+[settings]
+db_path = history.db
+cache_path = .cache-spotipy
+log_file = jazzgrove2spotify.log
+timeout = 10
