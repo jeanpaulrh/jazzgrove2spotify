@@ -367,12 +367,10 @@ def cmd_stats(config):
     conn = init_db(db_path)
     total = conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
     added = conn.execute("SELECT COUNT(*) FROM tracks WHERE added_to_playlist = 1").fetchone()[0]
-    matched = conn.execute("SELECT COUNT(*) FROM tracks WHERE spotify_uri IS NOT NULL").fetchone()[0]
-    not_found = conn.execute("SELECT COUNT(*) FROM tracks WHERE spotify_uri IS NULL").fetchone()[0]
-    print(f"Total tracks seen:     {total}")
-    print(f"Found on Spotify:      {matched}")
+    pending = conn.execute("SELECT COUNT(*) FROM tracks WHERE added_to_playlist = 0").fetchone()[0]
+    print(f"Total tracks:          {total}")
     print(f"Added to playlist:     {added}")
-    print(f"Not found on Spotify:  {not_found}")
+    print(f"Pending:               {pending}")
     recent = conn.execute(
         "SELECT artist, title, added_to_playlist, created_at FROM tracks ORDER BY id DESC LIMIT 10"
     ).fetchall()
@@ -418,14 +416,19 @@ def cmd_run(config, dry_run=False):
         conn.close()
         return
 
-    if uri:
-        playlist_id = config.get("spotify", "playlist_id")
-        try:
-            playlist_add_items(config, playlist_id, [uri])
-            added = True
-            logging.info("Added to playlist: %s - %s", artist, title)
-        except Exception as e:
-            logging.error("Failed to add to playlist: %s", e)
+    if not uri:
+        logging.info("Skipping (no Spotify match): %s - %s", artist, title)
+        conn.close()
+        return
+
+    playlist_id = config.get("spotify", "playlist_id")
+    added = False
+    try:
+        playlist_add_items(config, playlist_id, [uri])
+        added = True
+        logging.info("Added to playlist: %s - %s", artist, title)
+    except Exception as e:
+        logging.error("Failed to add to playlist: %s", e)
 
     save_track(conn, artist, title, uri, added)
     conn.close()
@@ -438,7 +441,7 @@ def cmd_retry(config):
     sp = get_spotify_client(config)
     playlist_id = config.get("spotify", "playlist_id")
 
-    # First: search Spotify for tracks saved without a URI
+    # First: search Spotify for tracks saved without a URI, remove if still not found
     no_uri = conn.execute(
         "SELECT id, artist, title FROM tracks WHERE spotify_uri IS NULL"
     ).fetchall()
@@ -450,6 +453,10 @@ def cmd_retry(config):
                 conn.execute("UPDATE tracks SET spotify_uri = ? WHERE id = ?", (uri, row_id))
                 conn.commit()
                 print(f"  [found] {artist} - {title}")
+            else:
+                conn.execute("DELETE FROM tracks WHERE id = ?", (row_id,))
+                conn.commit()
+                print(f"  [removed] {artist} - {title}")
 
     # Then: batch-add all tracks with URI but not yet in playlist (up to 100 per API call)
     pending = conn.execute(
