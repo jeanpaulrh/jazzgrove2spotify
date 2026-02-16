@@ -299,12 +299,12 @@ def search_spotify(sp, artist, title):
     ]
     seen_queries = set()
     seen_uris = set()
-    candidates = []
+    best = None  # (combined, t_artists, t_title, uri)
     for q in queries:
         if q in seen_queries:
             continue
         seen_queries.add(q)
-        results = sp.search(q=q, type="track", limit=5)
+        results = sp.search(q=q, type="track", limit=3)
         tracks = results.get("tracks", {}).get("items", [])
         for t in tracks:
             if t["uri"] in seen_uris:
@@ -326,10 +326,14 @@ def search_spotify(sp, artist, title):
             )
             combined = (artist_score + title_score) / 2
             if combined >= 0.55 and title_score >= 0.4:
-                candidates.append((combined, t_artists, t_title, t["uri"]))
-    if candidates:
-        candidates.sort(key=lambda c: c[0], reverse=True)
-        combined, t_artists, t_title, uri = candidates[0]
+                if not best or combined > best[0]:
+                    best = (combined, t_artists, t_title, t["uri"])
+                    if combined >= 0.95:
+                        break  # near-perfect match, stop searching
+        if best and best[0] >= 0.95:
+            break  # stop querying too
+    if best:
+        combined, t_artists, t_title, uri = best
         logging.info(
             "Match (%.0f%%): %s - %s -> %s - %s [%s]",
             combined * 100, artist, title, t_artists, t_title, uri,
@@ -446,8 +450,11 @@ def cmd_retry(config):
         "SELECT id, artist, title FROM tracks WHERE spotify_uri IS NULL"
     ).fetchall()
     if no_uri:
+        import time
         print(f"Searching Spotify for {len(no_uri)} tracks without URI...")
-        for row_id, artist, title in no_uri:
+        for i, (row_id, artist, title) in enumerate(no_uri):
+            if i > 0:
+                time.sleep(1)  # throttle to avoid 429
             uri = search_spotify(sp, artist, title)
             if uri:
                 conn.execute("UPDATE tracks SET spotify_uri = ? WHERE id = ?", (uri, row_id))
@@ -458,7 +465,7 @@ def cmd_retry(config):
                 conn.commit()
                 print(f"  [removed] {artist} - {title}")
 
-    # Then: batch-add all tracks with URI but not yet in playlist (up to 100 per API call)
+    # Then: add tracks with URI but not yet in playlist, one at a time with throttle
     pending = conn.execute(
         "SELECT id, artist, title, spotify_uri FROM tracks WHERE spotify_uri IS NOT NULL AND added_to_playlist = 0"
     ).fetchall()
@@ -467,21 +474,19 @@ def cmd_retry(config):
         conn.close()
         return
 
-    BATCH_SIZE = 100
     ok, fail = 0, 0
-    for i in range(0, len(pending), BATCH_SIZE):
-        batch = pending[i:i + BATCH_SIZE]
-        uris = [uri for _, _, _, uri in batch]
+    for i, (row_id, artist, title, uri) in enumerate(pending):
+        if i > 0:
+            time.sleep(2)  # throttle to avoid 429
         try:
-            playlist_add_items(config, playlist_id, uris)
-            for row_id, artist, title, _ in batch:
-                conn.execute("UPDATE tracks SET added_to_playlist = 1 WHERE id = ?", (row_id,))
-                print(f"  [+] {artist} - {title}")
+            playlist_add_items(config, playlist_id, [uri])
+            conn.execute("UPDATE tracks SET added_to_playlist = 1 WHERE id = ?", (row_id,))
             conn.commit()
-            ok += len(batch)
+            ok += 1
+            print(f"  [+] {artist} - {title}")
         except Exception as e:
-            fail += len(batch)
-            print(f"  [!] Batch failed ({len(batch)} tracks): {e}")
+            fail += 1
+            print(f"  [!] {artist} - {title}: {e}")
     conn.close()
     print(f"\nDone: {ok} added, {fail} failed.")
 
