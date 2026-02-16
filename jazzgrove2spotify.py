@@ -234,12 +234,16 @@ def get_spotify_client(config):
 def playlist_add_items(config, playlist_id, uris):
     """Add items to playlist using the new /items endpoint, with retry on 429."""
     import time
+    MAX_WAIT = 10
     url = f"https://api.spotify.com/v1/playlists/{playlist_id}/items"
     for attempt in range(3):
         r = requests.post(url, headers=_spotify_headers(config), json={"uris": uris})
         if r.status_code == 429:
-            wait = int(r.headers.get("Retry-After", 5)) + 1
-            logging.warning("Rate limited, waiting %ds...", wait)
+            try:
+                wait = min(int(r.headers.get("Retry-After", 5)), MAX_WAIT)
+            except (ValueError, TypeError):
+                wait = MAX_WAIT
+            logging.warning("Rate limited, waiting %ds (attempt %d/3)...", wait, attempt + 1)
             time.sleep(wait)
             continue
         r.raise_for_status()
