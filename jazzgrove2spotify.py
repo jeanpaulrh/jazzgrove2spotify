@@ -440,6 +440,7 @@ def cmd_run(config, dry_run=False):
 
 def cmd_retry(config):
     """Retry: search missing URIs on Spotify and add pending tracks to playlist."""
+    import time
     db_path = config.get("settings", "db_path", fallback="history.db")
     conn = init_db(db_path)
     sp = get_spotify_client(config)
@@ -450,7 +451,6 @@ def cmd_retry(config):
         "SELECT id, artist, title FROM tracks WHERE spotify_uri IS NULL"
     ).fetchall()
     if no_uri:
-        import time
         print(f"Searching Spotify for {len(no_uri)} tracks without URI...")
         for i, (row_id, artist, title) in enumerate(no_uri):
             if i > 0:
