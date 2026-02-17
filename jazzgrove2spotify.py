@@ -386,6 +386,54 @@ def cmd_stats(config):
     conn.close()
 
 
+def cmd_db_stats(config):
+    """Print detailed database statistics."""
+    db_path = config.get("settings", "db_path", fallback="history.db")
+    conn = init_db(db_path)
+
+    total = conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+    if not total:
+        print("No tracks in database.")
+        conn.close()
+        return
+
+    added = conn.execute("SELECT COUNT(*) FROM tracks WHERE added_to_playlist = 1").fetchone()[0]
+    pending = conn.execute("SELECT COUNT(*) FROM tracks WHERE added_to_playlist = 0").fetchone()[0]
+    first, last = conn.execute("SELECT MIN(created_at), MAX(created_at) FROM tracks").fetchone()
+    unique_artists = conn.execute("SELECT COUNT(DISTINCT artist) FROM tracks").fetchone()[0]
+
+    print(f"=== Overview ===")
+    print(f"Total tracks:          {total}")
+    print(f"Added to playlist:     {added}")
+    print(f"Pending:               {pending}")
+    print(f"Unique artists:        {unique_artists}")
+    print(f"Period:                {first[:10]} to {last[:10]}")
+
+    # Top artists by track count
+    top_artists = conn.execute(
+        "SELECT artist, COUNT(*) as cnt FROM tracks GROUP BY artist ORDER BY cnt DESC LIMIT 15"
+    ).fetchall()
+    print(f"\n=== Top 15 artists ===")
+    for i, (artist, cnt) in enumerate(top_artists, 1):
+        print(f"  {i:2d}. {artist} ({cnt})")
+
+    # Tracks per day
+    daily = conn.execute(
+        "SELECT DATE(created_at) as day, COUNT(*) as cnt FROM tracks GROUP BY day ORDER BY day"
+    ).fetchall()
+    print(f"\n=== Tracks per day ===")
+    for day, cnt in daily:
+        bar = "#" * min(cnt, 50)
+        print(f"  {day}  {cnt:3d}  {bar}")
+
+    # Success rate
+    pct = (added / total * 100) if total else 0
+    print(f"\n=== Success rate ===")
+    print(f"  {added}/{total} tracks added ({pct:.0f}%)")
+
+    conn.close()
+
+
 def cmd_run(config, dry_run=False):
     """Main run: fetch metadata, search Spotify, add to playlist."""
     stream_url = config.get("stream", "stream_url")
@@ -499,6 +547,7 @@ def main():
     parser = argparse.ArgumentParser(description="Jazz Groove to Spotify playlist sync")
     parser.add_argument("--setup", action="store_true", help="Run OAuth setup")
     parser.add_argument("--stats", action="store_true", help="Show database statistics")
+    parser.add_argument("--db-stats", action="store_true", help="Show detailed database statistics")
     parser.add_argument("--retry", action="store_true", help="Retry adding pending tracks to playlist")
     parser.add_argument("--dry-run", action="store_true", help="Test without modifying playlist or database")
     args = parser.parse_args()
@@ -508,6 +557,9 @@ def main():
 
     if args.setup:
         cmd_setup(config)
+        return
+    if args.db_stats:
+        cmd_db_stats(config)
         return
     if args.stats:
         cmd_stats(config)
